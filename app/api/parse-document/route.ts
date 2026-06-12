@@ -15,7 +15,7 @@ async function extractTextFromHwp(buffer: Buffer, filename: string): Promise<str
   return extract(buffer, filename);
 }
 
-async function parseQuestionsWithClaude(text: string) {
+async function parseAnswerKeyWithClaude(text: string) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
 
@@ -23,30 +23,26 @@ async function parseQuestionsWithClaude(text: string) {
 
   const message = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 4096,
+    max_tokens: 2048,
     messages: [
       {
         role: "user",
-        content: `아래는 시험 문제지에서 추출한 텍스트입니다. 이 텍스트를 분석해서 JSON 배열로 변환해주세요.
+        content: `아래는 시험 답안지(정답표)에서 추출한 텍스트입니다.
+각 문제의 정답과 배점을 추출해서 JSON 배열로 반환해주세요.
 
-각 문제에 대해 다음 형식의 JSON 객체를 만드세요:
-{
-  "number": 문제번호(숫자),
-  "type": "multiple" | "short" | "ox",
-  "content": "문제 내용",
-  "options": ["보기1", "보기2", "보기3", "보기4"],  // 객관식일 때만
-  "answer": "정답",
-  "explanation": "해설 (있으면 포함, 없으면 빈 문자열)",
-  "points": 배점(숫자, 모르면 5)
-}
+반환 형식 (JSON 배열만, 설명 없이):
+[
+  { "number": 1, "answer": "3", "points": 5 },
+  { "number": 2, "answer": "O", "points": 5 },
+  { "number": 3, "answer": "서울", "points": 5 }
+]
 
 규칙:
-- 객관식(multiple): 번호 보기가 있는 문제 (①②③④ 또는 1.2.3.4. 형식)
-- O/X(ox): O 또는 X로 답하는 문제
-- 주관식(short): 나머지
-- 정답이 명시되어 있으면 포함, 없으면 빈 문자열("")
-- 객관식 정답은 번호만 (예: "1", "2", "3", "4")
-- 응답은 JSON 배열만, 설명 없이
+- number: 문제 번호 (숫자)
+- answer: 정답 문자열 (객관식이면 번호만, 예: "1","2","3","4" / OX면 "O" 또는 "X" / 주관식이면 텍스트)
+- points: 배점 (숫자, 없으면 5)
+- 정답 표시가 ①②③④⑤이면 각각 "1","2","3","4","5"로 변환
+- 응답은 반드시 JSON 배열만
 
 텍스트:
 ${text}`,
@@ -85,13 +81,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "PDF 또는 HWP/HWPX 파일만 지원합니다." }, { status: 400 });
     }
 
-    if (!text || text.trim().length < 10) {
+    if (!text || text.trim().length < 5) {
       return NextResponse.json({ error: "파일에서 텍스트를 추출할 수 없습니다." }, { status: 422 });
     }
 
-    const questions = await parseQuestionsWithClaude(text);
+    const answers = await parseAnswerKeyWithClaude(text);
 
-    return NextResponse.json({ text: text.slice(0, 3000), questions });
+    return NextResponse.json({ text: text.slice(0, 2000), answers });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "파일 처리 중 오류가 발생했습니다." }, { status: 500 });

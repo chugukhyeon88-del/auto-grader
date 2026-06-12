@@ -40,7 +40,7 @@ export async function submitAnswers(
   const exam = await getExam(examId);
   if (!exam) throw new Error("시험을 찾을 수 없습니다.");
 
-  const results = gradeExam(exam.questions, answers);
+  const results = gradeExam(exam.answerKeys, answers);
   const score = results.reduce((sum, r) => sum + r.earnedPoints, 0);
   const percentage = Math.round((score / exam.totalPoints) * 100);
 
