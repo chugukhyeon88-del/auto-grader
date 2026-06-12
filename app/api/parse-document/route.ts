@@ -23,12 +23,13 @@ async function parseAnswerKeyWithClaude(text: string) {
 
   const message = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [
       {
         role: "user",
         content: `아래는 시험 답안지(정답표)에서 추출한 텍스트입니다.
-각 문제의 정답과 배점을 추출해서 JSON 배열로 반환해주세요.
+텍스트에 있는 모든 문제의 정답과 배점을 빠짐없이 추출해서 JSON 배열로 반환해주세요.
+중간에 멈추지 말고 마지막 문제까지 전부 포함해야 합니다.
 
 반환 형식 (JSON 배열만, 설명 없이):
 [
@@ -39,10 +40,14 @@ async function parseAnswerKeyWithClaude(text: string) {
 
 규칙:
 - number: 문제 번호 (숫자)
-- answer: 정답 문자열 (객관식이면 번호만, 예: "1","2","3","4" / OX면 "O" 또는 "X" / 주관식이면 텍스트)
-- points: 배점 (숫자, 없으면 5)
-- 정답 표시가 ①②③④⑤이면 각각 "1","2","3","4","5"로 변환
-- 응답은 반드시 JSON 배열만
+- answer: 정답 문자열
+  - 객관식: 숫자만 ("1","2","3","4","5")
+  - ①②③④⑤ → 각각 "1","2","3","4","5"로 변환
+  - OX: "O" 또는 "X"
+  - 주관식: 정답 텍스트 그대로
+- points: 배점 (숫자, 명시되지 않으면 5)
+- 텍스트에서 확인되는 모든 문제를 반드시 포함할 것 (누락 금지)
+- 응답은 JSON 배열만, 다른 텍스트 없이
 
 텍스트:
 ${text}`,
@@ -87,7 +92,7 @@ export async function POST(req: NextRequest) {
 
     const answers = await parseAnswerKeyWithClaude(text);
 
-    return NextResponse.json({ text: text.slice(0, 2000), answers });
+    return NextResponse.json({ text: text.slice(0, 5000), answers });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "파일 처리 중 오류가 발생했습니다." }, { status: 500 });
