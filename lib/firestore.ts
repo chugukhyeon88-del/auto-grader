@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   addDoc,
+  updateDoc,
   getDoc,
   getDocs,
   query,
@@ -10,7 +11,7 @@ import {
   Timestamp,
 } from "firebase/firestore";
 import { db } from "./firebase";
-import { Exam, Submission, StudentAnswer } from "./types";
+import { Exam, AnswerKey, Submission, StudentAnswer } from "./types";
 import { gradeExam } from "./grader";
 
 export async function createExam(exam: Omit<Exam, "id" | "createdAt">): Promise<string> {
@@ -19,6 +20,14 @@ export async function createExam(exam: Omit<Exam, "id" | "createdAt">): Promise<
     createdAt: serverTimestamp(),
   });
   return ref.id;
+}
+
+export async function updateExamAnswerKeys(
+  examId: string,
+  answerKeys: AnswerKey[]
+): Promise<void> {
+  const totalPoints = answerKeys.reduce((s, k) => s + k.points, 0);
+  await updateDoc(doc(db, "exams", examId), { answerKeys, totalPoints });
 }
 
 export async function getExam(examId: string): Promise<Exam | null> {

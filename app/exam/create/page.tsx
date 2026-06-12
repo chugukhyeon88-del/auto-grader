@@ -324,7 +324,12 @@ export default function CreateExamPage() {
               </div>
             ))}
           </div>
-          <p className="text-xs text-gray-400 mt-3">* 오른쪽 숫자는 배점입니다. 클릭해서 수정할 수 있습니다.</p>
+          <div className="mt-3 bg-gray-50 border border-gray-100 rounded-xl px-4 py-3 text-xs text-gray-500 leading-relaxed">
+            <p className="font-semibold text-gray-600 mb-1">정답 입력 팁 · 오른쪽 숫자는 배점</p>
+            <p>· 여러 답 모두 인정: <code className="bg-white px-1 rounded border">/</code>로 구분 &nbsp;예) <code className="bg-white px-1 rounded border">서울/서울특별시</code></p>
+            <p>· 빈칸 여러 개(순서 무관): <code className="bg-white px-1 rounded border">,</code>로 구분 &nbsp;예) <code className="bg-white px-1 rounded border">6,9,12,15</code></p>
+            <p>· &quot;3개&quot;와 &quot;3&quot;처럼 단위·띄어쓰기 차이는 자동으로 정답 처리됩니다.</p>
+          </div>
         </div>
 
         {error && (

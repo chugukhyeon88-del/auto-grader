@@ -4,7 +4,8 @@ service cloud.firestore {
     match /exams/{examId} {
       allow read: if true;
       allow create: if true;
-      allow update, delete: if false;
+      allow update: if true;
+      allow delete: if false;
     }
     match /submissions/{submissionId} {
       allow read: if true;

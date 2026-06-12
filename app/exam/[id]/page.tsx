@@ -113,6 +113,7 @@ export default function TakeExamPage() {
           </div>
           <p className="text-xs text-gray-400 mt-3">
             Enter 또는 Tab으로 다음 칸으로 이동할 수 있습니다.
+            빈칸이 여러 개인 문제는 <code className="bg-gray-100 px-1 rounded">6,9,12,15</code>처럼 쉼표로 구분해 입력하세요.
           </p>
         </div>
 
