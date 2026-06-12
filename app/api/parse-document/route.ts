@@ -4,23 +4,12 @@ import cfb from "cfb";
 
 export const maxDuration = 60;
 
-// ── PDF 텍스트 추출 (pdfjs-dist, 서버리스 호환) ──────────────
+// ── PDF 텍스트 추출 (unpdf, 서버리스 호환) ───────────────────
 async function extractTextFromPdf(buffer: Buffer): Promise<string> {
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
-  const pdf = await loadingTask.promise;
-  const texts: string[] = [];
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const pageText = content.items
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .map((item: any) => item.str ?? "")
-      .join(" ");
-    texts.push(pageText);
-  }
-  return texts.join("\n");
+  const { extractText, getDocumentProxy } = await import("unpdf");
+  const pdf = await getDocumentProxy(new Uint8Array(buffer));
+  const { text } = await extractText(pdf, { mergePages: true });
+  return Array.isArray(text) ? text.join("\n") : text;
 }
 
 // ── HWP 레코드 파싱 ──────────────────────────────────────────
