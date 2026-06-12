@@ -116,8 +116,13 @@ export default function CreateExamPage() {
         setUploadState("done");
         setUploadMsg(`${parsed.length}개 문제의 정답을 불러왔습니다. 확인 후 수정하세요.`);
       } else {
-        setUploadState("done");
-        setUploadMsg("자동 인식에 실패했습니다. 추출된 텍스트를 보고 직접 입력해주세요.");
+        setUploadState("error");
+        setUploadMsg(
+          "정답을 자동 인식하지 못했습니다. " +
+          (filename.endsWith(".hwp")
+            ? "HWP 파일은 한글에서 [다른 이름으로 저장 → PDF]로 변환 후 다시 업로드해보세요."
+            : "추출된 원문 텍스트를 보고 아래 '정답 일괄 입력' 칸에 직접 입력해주세요.")
+        );
         setShowRaw(true);
       }
     } catch {
@@ -207,10 +212,15 @@ export default function CreateExamPage() {
         <div className="bg-white rounded-2xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-700 mb-1">
             답안지 파일 업로드
-            <span className="text-xs font-normal text-gray-400 ml-2">(선택 · PDF / HWP / HWPX)</span>
+            <span className="text-xs font-normal text-gray-400 ml-2">(선택)</span>
           </h2>
+          <div className="flex gap-2 mb-4">
+            <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">PDF 권장</span>
+            <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">HWP / HWPX</span>
+          </div>
           <p className="text-xs text-gray-400 mb-4">
-            정답이 적힌 파일을 올리면 자동으로 정답을 채워줍니다.
+            정답이 적힌 파일을 올리면 자동으로 정답을 채워줍니다.<br/>
+            <strong className="text-gray-500">HWP는 PDF로 저장 후 업로드하면 인식률이 훨씬 높아집니다.</strong>
           </p>
           <label className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-7 cursor-pointer transition ${
             uploadState === "parsing"

@@ -1,7 +1,5 @@
 /**
  * HWP/HWPX 파일에서 텍스트 추출
- * - HWPX (.hwpx): ZIP+XML 구조 → JSZip으로 파싱
- * - HWP  (.hwp) : OLE/CFB 구조 → cfb 패키지로 BodyText 스트림 추출 → zlib 해제 → HWP 레코드 파싱
  */
 
 // ───────────────────────────────────────────────────────────
@@ -22,7 +20,6 @@ async function extractHwpx(buffer: Buffer): Promise<string> {
 
   for (const name of sectionFiles) {
     const xml = await zip.files[name].async("text");
-    // <hp:t> 태그 내 텍스트 우선 추출
     const hpTexts: string[] = [];
     xml.replace(/<hp:t[^>]*>([\s\S]*?)<\/hp:t>/g, (_: string, inner: string) => {
       const t = inner.trim();
@@ -33,7 +30,6 @@ async function extractHwpx(buffer: Buffer): Promise<string> {
     if (hpTexts.length > 0) {
       texts.push(hpTexts.join(" "));
     } else {
-      // fallback: 모든 태그 제거
       const plain = xml
         .replace(/<[^>]+>/g, " ")
         .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
@@ -47,7 +43,7 @@ async function extractHwpx(buffer: Buffer): Promise<string> {
 }
 
 // ───────────────────────────────────────────────────────────
-// HWP 바이너리: OLE/CFB → zlib 해제 → HWP 레코드 → 텍스트
+// HWP 레코드 파싱 (압축 해제된 BodyText 섹션용)
 // ───────────────────────────────────────────────────────────
 function parseHwpRecords(data: Buffer): string {
   const texts: string[] = [];
@@ -55,8 +51,8 @@ function parseHwpRecords(data: Buffer): string {
 
   while (i + 4 <= data.length) {
     const header = data.readUInt32LE(i);
-    const tagId  = header & 0x3ff;
-    let   size   = (header >> 20) & 0xfff;
+    const tagId = header & 0x3ff;
+    let size = (header >> 20) & 0xfff;
     i += 4;
 
     if (size === 0xfff) {
@@ -70,12 +66,11 @@ function parseHwpRecords(data: Buffer): string {
     // PARA_TEXT = 67
     if (tagId === 67 && size > 0) {
       const chunk = data.slice(i, i + size);
-      // UTF-16LE 디코딩, 제어 문자 제거
       let text = "";
       for (let j = 0; j + 1 < chunk.length; j += 2) {
         const code = chunk.readUInt16LE(j);
-        if (code === 13 || code === 10) { text += "\n"; }
-        else if (code >= 0x20 && code !== 0xffff) { text += String.fromCharCode(code); }
+        if (code === 13 || code === 10) text += "\n";
+        else if (code >= 0x20 && code < 0xfffe) text += String.fromCharCode(code);
       }
       const t = text.trim();
       if (t.length > 0) texts.push(t);
@@ -87,90 +82,146 @@ function parseHwpRecords(data: Buffer): string {
   return texts.join("\n");
 }
 
+// ───────────────────────────────────────────────────────────
+// 깨진 문자 필터링 → 의미 있는 텍스트만 추출
+// ───────────────────────────────────────────────────────────
+function filterReadableText(raw: string): string {
+  const lines = raw.split("\n");
+  const result: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // 전체 길이 대비 읽을 수 있는 문자(숫자, 영문, 일반 한글) 비율 계산
+    const readable = trimmed.split("").filter((c) => {
+      const code = c.charCodeAt(0);
+      return (
+        (code >= 0x30 && code <= 0x39) ||   // 0-9
+        (code >= 0x41 && code <= 0x7a) ||   // A-z
+        (code >= 0xac00 && code <= 0xd7a3) || // 한글 음절 (완성형)
+        (code >= 0x3131 && code <= 0x318e) || // 한글 자모
+        c === " " || c === "." || c === "," ||
+        c === ":" || c === ")" || c === "(" ||
+        c === "①" || c === "②" || c === "③" || c === "④" || c === "⑤" ||
+        c === "O" || c === "X" || c === "o" || c === "x"
+      );
+    });
+
+    const ratio = readable.length / trimmed.length;
+
+    // 가독성 비율 50% 이상이고, 최소 1자 이상인 경우만 포함
+    if (ratio >= 0.5 && readable.length >= 1) {
+      result.push(readable.join("").trim());
+    }
+  }
+
+  // 중복 제거, 빈 줄 제거
+  return [...new Set(result)].filter(Boolean).join("\n");
+}
+
+// ───────────────────────────────────────────────────────────
+// HWP 바이너리 파싱 (OLE/CFB)
+// ───────────────────────────────────────────────────────────
 function extractHwpBinary(buffer: Buffer): string {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const zlib = require("zlib");
+  const allTexts: string[] = [];
 
-  let allText = "";
-
+  // 방법 1: cfb 패키지로 OLE 구조 파싱
   try {
-    // cfb 패키지로 OLE 구조 파싱
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const CFB = require("cfb");
     const cfb = CFB.read(buffer, { type: "buffer" });
 
-    // BodyText/Section0, Section1, ... 순서대로 처리
-    const bodyEntries = cfb.FileIndex
-      .filter((e: { name: string; content?: Buffer }) =>
-        e.name && /^Section\d+$/i.test(e.name) && e.content
-      )
-      .sort((a: { name: string }, b: { name: string }) => {
-        const na = parseInt(a.name.replace(/\D/g, "") || "0");
-        const nb = parseInt(b.name.replace(/\D/g, "") || "0");
-        return na - nb;
-      });
+    // BodyText 디렉토리 아래 Section 스트림들 수집
+    const bodyEntries = cfb.FileIndex.filter(
+      (e: { name: string; content?: Uint8Array; type?: number }) =>
+        e.name &&
+        /^Section\d*$/i.test(e.name) &&
+        e.content &&
+        e.content.length > 0
+    ).sort((a: { name: string }, b: { name: string }) => {
+      const na = parseInt(a.name.replace(/\D/g, "") || "0");
+      const nb = parseInt(b.name.replace(/\D/g, "") || "0");
+      return na - nb;
+    });
 
     for (const entry of bodyEntries) {
-      if (!entry.content || entry.content.length === 0) continue;
+      if (!entry.content) continue;
+      const buf = Buffer.from(entry.content);
+
+      // zlib raw inflate 시도
       try {
-        // HWP BodyText 섹션은 zlib raw deflate (windowBits = -15)
-        const decompressed: Buffer = zlib.inflateRawSync(entry.content);
+        const decompressed = zlib.inflateRawSync(buf);
         const text = parseHwpRecords(decompressed);
-        if (text.trim()) allText += text + "\n";
-      } catch {
-        // 압축되지 않은 섹션이면 그냥 파싱 시도
-        try {
-          const text = parseHwpRecords(Buffer.from(entry.content));
-          if (text.trim()) allText += text + "\n";
-        } catch { /* skip */ }
-      }
+        if (text.trim()) allTexts.push(text);
+        continue;
+      } catch { /* not compressed */ }
+
+      // 압축 없이 직접 파싱 시도
+      try {
+        const text = parseHwpRecords(buf);
+        if (text.trim()) allTexts.push(text);
+      } catch { /* skip */ }
     }
   } catch (cfbErr) {
-    // cfb 파싱 실패 시 fallback: 버퍼 전체에서 zlib 스트림 탐색
-    console.warn("cfb parse failed, using fallback:", cfbErr);
-    for (let i = 0; i < buffer.length - 2; i++) {
-      // zlib raw deflate 시그니처 탐지 (첫 바이트가 특정 값일 때)
-      if (buffer[i] === 0x78 && (buffer[i + 1] === 0x9c || buffer[i + 1] === 0xda || buffer[i + 1] === 0x01)) {
-        try {
-          const chunk = buffer.slice(i);
-          const decompressed: Buffer = zlib.inflateSync(chunk);
-          const text = parseHwpRecords(decompressed);
-          if (text.trim().length > 5) allText += text + "\n";
-        } catch { /* not a valid zlib block */ }
-      }
-    }
+    console.warn("cfb parse error:", cfbErr);
+  }
 
-    // 최후 fallback: UTF-16LE 스캔으로 한글 텍스트 수집
-    if (!allText.trim()) {
-      const segments: string[] = [];
-      let cur = "";
-      for (let i = 0; i + 1 < buffer.length; i += 2) {
-        const code = buffer.readUInt16LE(i);
-        if ((code >= 0xac00 && code <= 0xd7a3) || // 한글 음절
-            (code >= 0x30 && code <= 0x39) ||       // 숫자
-            (code >= 0x20 && code <= 0x7e) ||       // ASCII
-            code === 0x0a || code === 0x0d) {
-          cur += String.fromCharCode(code);
-        } else {
-          if (cur.trim().length > 1) segments.push(cur.trim());
-          cur = "";
-        }
+  // 방법 2: 버퍼 전체에서 zlib deflate 스트림 탐지
+  if (allTexts.length === 0) {
+    for (let i = 0; i < buffer.length - 4; i++) {
+      // deflate 헤더: 0x78 0x9C / 0x78 0xDA / 0x78 0x01
+      if (
+        buffer[i] === 0x78 &&
+        (buffer[i + 1] === 0x9c || buffer[i + 1] === 0xda || buffer[i + 1] === 0x01)
+      ) {
+        try {
+          const decompressed = zlib.inflateSync(buffer.slice(i));
+          const text = parseHwpRecords(decompressed);
+          if (text.trim().length > 3) {
+            allTexts.push(text);
+            i += 50; // 겹침 방지
+          }
+        } catch { /* not valid */ }
       }
-      if (cur.trim().length > 1) segments.push(cur.trim());
-      allText = segments.join("\n");
     }
   }
 
-  return allText.trim();
+  // 방법 3 (최후 수단): 버퍼 전체를 UTF-16LE로 스캔 후 가독성 필터 적용
+  if (allTexts.length === 0) {
+    const segments: string[] = [];
+    let cur = "";
+    for (let i = 0; i + 1 < buffer.length; i += 2) {
+      const code = buffer.readUInt16LE(i);
+      if (
+        (code >= 0xac00 && code <= 0xd7a3) || // 한글 음절
+        (code >= 0x30 && code <= 0x39) ||      // 숫자
+        (code >= 0x41 && code <= 0x7a) ||      // 영문
+        code === 0x20 || code === 0x0a
+      ) {
+        cur += String.fromCharCode(code);
+      } else {
+        if (cur.trim().length > 1) segments.push(cur.trim());
+        cur = "";
+      }
+    }
+    if (cur.trim().length > 1) segments.push(cur.trim());
+    allTexts.push(segments.join("\n"));
+  }
+
+  const raw = allTexts.join("\n");
+  return filterReadableText(raw);
 }
 
 // ───────────────────────────────────────────────────────────
 // 공개 함수
-// ───────────────────────────────────────────────────────────
+// ───────────────────────────────────────────="────────────────
 export async function extractTextFromHwp(buffer: Buffer, filename: string): Promise<string> {
   const isHwpx =
     filename.toLowerCase().endsWith(".hwpx") ||
-    (buffer[0] === 0x50 && buffer[1] === 0x4b); // PK magic = ZIP
+    (buffer[0] === 0x50 && buffer[1] === 0x4b);
 
   if (isHwpx) {
     return extractHwpx(buffer);
