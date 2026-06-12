@@ -155,45 +155,90 @@ async function extractTextFromHwp(buffer: Buffer, filename: string): Promise<str
   return filterReadable(allTexts.join("\n"));
 }
 
-// ── Claude로 정답 추출 ───────────────────────────────────────
-async function parseAnswerKeyWithClaude(text: string) {
+// ── 정답 추출 공통 프롬프트 ──────────────────────────────────
+const ANSWER_INSTRUCTION = `당신은 시험 답안지(정답표)를 읽고 정답을 정확히 추출하는 전문가입니다.
+주어진 답안지에서 모든 문제의 번호·정답·배점을 빠짐없이 추출해 JSON 배열로만 반환하세요.
+
+작업 순서:
+1. 먼저 답안지의 전체 구조를 파악합니다 (표 형태인지, 가로/세로 배열인지, 문제 번호 범위는 몇 번부터 몇 번까지인지).
+2. 각 문제 번호에 대응하는 정답을 정확히 매칭합니다. 표의 행/열 구조를 반드시 지켜서 번호와 정답이 어긋나지 않게 합니다.
+3. 1번부터 마지막 번호까지 빠진 번호가 없는지 검증합니다.
+
+반환 형식 (JSON 배열만, 다른 설명 없이):
+[{ "number": 1, "answer": "3", "points": 5 }, { "number": 2, "answer": "O", "points": 5 }]
+
+규칙:
+- number: 문제 번호 (정수). 1번부터 끝까지 연속되게, 누락 금지.
+- answer:
+  - 객관식 정답은 숫자만 ("1"~"5"). ①②③④⑤ 또는 ㄱㄴㄷㄹ 같은 표기는 해당 숫자로 변환.
+  - OX 문제는 "O" 또는 "X".
+  - 주관식/단답형은 정답 텍스트를 그대로.
+  - 정답이 여러 개면 쉼표로 구분 (예: "1,3").
+- points: 배점(정수). 명시되지 않으면 5.
+- 확실하지 않은 정답도 가장 가능성 높은 값으로 채우되, 절대 번호를 건너뛰지 마세요.
+- 출력은 JSON 배열만. 마크다운 코드펜스(\`\`\`)나 설명 문장을 붙이지 마세요.`;
+
+function parseJsonArray(rawText: string) {
+  try {
+    const m = rawText.match(/\[[\s\S]*\]/);
+    return m ? JSON.parse(m[0]) : null;
+  } catch {
+    return null;
+  }
+}
+
+// PDF를 Claude에 직접 전달 (비전+텍스트 동시 활용 → 표 구조 정확 인식)
+async function parseAnswerKeyFromPdf(buffer: Buffer) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
 
   const client = new Anthropic({ apiKey });
   const msg = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 4096,
+    max_tokens: 8192,
     messages: [
       {
         role: "user",
-        content: `아래는 시험 답안지(정답표)에서 추출한 텍스트입니다.
-모든 문제의 정답과 배점을 빠짐없이 추출해 JSON 배열로만 반환하세요. 마지막 문제까지 누락 없이 포함해야 합니다.
-
-반환 형식 (JSON 배열만):
-[{ "number": 1, "answer": "3", "points": 5 }, ...]
-
-규칙:
-- 객관식 정답: 숫자만 ("1"~"5"), ①②③④⑤ → "1"~"5"
-- OX: "O" 또는 "X"
-- 주관식: 텍스트 그대로
-- 배점 없으면 5
-- JSON 배열만, 설명 없이
-
-텍스트:
-${text}`,
+        content: [
+          {
+            type: "document",
+            source: {
+              type: "base64",
+              media_type: "application/pdf",
+              data: buffer.toString("base64"),
+            },
+          },
+          { type: "text", text: ANSWER_INSTRUCTION },
+        ],
       },
     ],
   });
 
   const content = msg.content[0];
   if (content.type !== "text") return null;
-  try {
-    const m = content.text.match(/\[[\s\S]*\]/);
-    return m ? JSON.parse(m[0]) : null;
-  } catch {
-    return null;
-  }
+  return parseJsonArray(content.text);
+}
+
+// 추출된 텍스트로 정답 추출 (HWP 등 PDF가 아닌 경우)
+async function parseAnswerKeyFromText(text: string) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  const client = new Anthropic({ apiKey });
+  const msg = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 8192,
+    messages: [
+      {
+        role: "user",
+        content: `${ANSWER_INSTRUCTION}\n\n답안지 텍스트:\n${text}`,
+      },
+    ],
+  });
+
+  const content = msg.content[0];
+  if (content.type !== "text") return null;
+  return parseJsonArray(content.text);
 }
 
 // ── API 핸들러 ───────────────────────────────────────────────
@@ -207,21 +252,37 @@ export async function POST(req: NextRequest) {
     const bytes = await file.arrayBuffer();
     const buffer = Buffer.from(bytes);
 
-    let text = "";
     if (filename.endsWith(".pdf")) {
-      text = await extractTextFromPdf(buffer);
-    } else if (filename.endsWith(".hwp") || filename.endsWith(".hwpx")) {
-      text = await extractTextFromHwp(buffer, filename);
-    } else {
-      return NextResponse.json({ error: "PDF 또는 HWP/HWPX 파일만 지원합니다." }, { status: 400 });
+      // PDF는 Claude에 직접 전달 (표 구조·레이아웃까지 정확히 인식)
+      let answers = await parseAnswerKeyFromPdf(buffer);
+
+      // 보조: 텍스트도 추출해 화면에 보여주고, PDF 직독 실패 시 폴백
+      let text = "";
+      try {
+        text = await extractTextFromPdf(buffer);
+      } catch {
+        /* 텍스트 추출 실패는 무시 */
+      }
+      if ((!answers || answers.length === 0) && text.trim().length >= 5) {
+        answers = await parseAnswerKeyFromText(text);
+      }
+
+      return NextResponse.json({ text: text.slice(0, 5000), answers });
     }
 
-    if (!text?.trim() || text.trim().length < 5) {
-      return NextResponse.json({ error: "파일에서 텍스트를 추출할 수 없습니다. PDF로 변환 후 다시 시도해보세요." }, { status: 422 });
+    if (filename.endsWith(".hwp") || filename.endsWith(".hwpx")) {
+      const text = await extractTextFromHwp(buffer, filename);
+      if (!text?.trim() || text.trim().length < 5) {
+        return NextResponse.json(
+          { error: "파일에서 텍스트를 추출할 수 없습니다. 한글에서 PDF로 저장 후 업로드하면 정확도가 높아집니다." },
+          { status: 422 }
+        );
+      }
+      const answers = await parseAnswerKeyFromText(text);
+      return NextResponse.json({ text: text.slice(0, 5000), answers });
     }
 
-    const answers = await parseAnswerKeyWithClaude(text);
-    return NextResponse.json({ text: text.slice(0, 5000), answers });
+    return NextResponse.json({ error: "PDF 또는 HWP/HWPX 파일만 지원합니다." }, { status: 400 });
   } catch (err) {
     console.error("parse-document error:", err);
     return NextResponse.json(
