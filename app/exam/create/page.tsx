@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { createExam } from "@/lib/firestore";
 import { Question, QuestionType } from "@/lib/types";
@@ -21,6 +21,58 @@ export default function CreateExamPage() {
   const [questions, setQuestions] = useState<Omit<Question, "id">[]>([defaultQuestion()]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [uploadState, setUploadState] = useState<"idle" | "parsing" | "done" | "error">("idle");
+  const [uploadMsg, setUploadMsg] = useState("");
+  const [rawText, setRawText] = useState("");
+  const [showRawText, setShowRawText] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadState("parsing");
+    setUploadMsg(`"${file.name}" 분석 중...`);
+    setRawText("");
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/parse-document", { method: "POST", body: formData });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setUploadState("error");
+        setUploadMsg(data.error ?? "파일 처리 오류");
+        return;
+      }
+
+      if (data.text) setRawText(data.text);
+
+      if (data.questions && data.questions.length > 0) {
+        const parsed: Omit<Question, "id">[] = data.questions.map((q: any, i: number) => ({
+          number: q.number ?? i + 1,
+          type: (q.type as QuestionType) ?? "short",
+          content: q.content ?? "",
+          options: q.options ?? (q.type === "multiple" ? ["", "", "", ""] : undefined),
+          answer: q.answer ?? "",
+          explanation: q.explanation ?? "",
+          points: q.points ?? 5,
+        }));
+        setQuestions(parsed);
+        setUploadState("done");
+        setUploadMsg(`${parsed.length}개 문제를 불러왔습니다. 내용을 확인하고 수정하세요.`);
+      } else {
+        setUploadState("done");
+        setUploadMsg("문제 자동 인식에 실패했습니다. 추출된 텍스트를 참고해 직접 입력해주세요.");
+        setShowRawText(true);
+      }
+    } catch {
+      setUploadState("error");
+      setUploadMsg("네트워크 오류가 발생했습니다.");
+    } finally {
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
 
   function addQuestion() {
     setQuestions((prev) => [
@@ -111,6 +163,63 @@ export default function CreateExamPage() {
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
+        </div>
+
+          {/* 파일 업로드 */}
+        <div className="bg-white rounded-2xl border border-gray-200 p-6">
+          <h2 className="font-semibold text-gray-700 mb-1">문제지 파일 업로드 <span className="text-xs font-normal text-gray-400">(선택)</span></h2>
+          <p className="text-xs text-gray-400 mb-4">한글(.hwp/.hwpx) 또는 PDF 파일을 업로드하면 문제를 자동으로 인식합니다.</p>
+          <label className={`flex flex-col items-center justify-center gap-2 border-2 border-dashed rounded-xl py-8 cursor-pointer transition ${
+            uploadState === "parsing" ? "border-blue-300 bg-blue-50" : "border-gray-300 hover:border-blue-400 hover:bg-gray-50"
+          }`}>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".pdf,.hwp,.hwpx"
+              className="hidden"
+              onChange={handleFileUpload}
+              disabled={uploadState === "parsing"}
+            />
+            {uploadState === "parsing" ? (
+              <div className="flex items-center gap-2 text-blue-600">
+                <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <span className="text-sm font-medium">{uploadMsg}</span>
+              </div>
+            ) : (
+              <>
+                <span className="text-3xl">📄</span>
+                <span className="text-sm text-gray-500">클릭하거나 파일을 드래그하세요</span>
+                <span className="text-xs text-gray-400">PDF, HWP, HWPX 지원</span>
+              </>
+            )}
+          </label>
+          {uploadState === "done" && (
+            <div className="mt-3 bg-green-50 border border-green-200 text-green-700 rounded-xl px-4 py-3 text-sm flex items-start gap-2">
+              <span>✅</span>
+              <div>
+                <p>{uploadMsg}</p>
+                {rawText && (
+                  <button onClick={() => setShowRawText((v) => !v)} className="text-xs underline mt-1 text-green-600">
+                    {showRawText ? "원문 텍스트 숨기기" : "원문 텍스트 보기"}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {uploadState === "error" && (
+            <div className="mt-3 bg-red-50 border border-red-200 text-red-600 rounded-xl px-4 py-3 text-sm">
+              ❌ {uploadMsg}
+            </div>
+          )}
+          {showRawText && rawText && (
+            <div className="mt-3 bg-gray-50 border border-gray-200 rounded-xl p-4 max-h-48 overflow-y-auto">
+              <p className="text-xs font-medium text-gray-500 mb-1">추출된 원문</p>
+              <pre className="text-xs text-gray-600 whitespace-pre-wrap font-sans">{rawText}</pre>
+            </div>
+          )}
         </div>
 
         {/* 문제 목록 */}
