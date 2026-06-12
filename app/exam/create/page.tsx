@@ -82,6 +82,7 @@ export default function CreateExamPage() {
   async function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    const filename = file.name.toLowerCase();
     setUploadState("parsing");
     setUploadMsg(`"${file.name}" 분석 중...`);
     setRawText("");
